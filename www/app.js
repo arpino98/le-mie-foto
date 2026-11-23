@@ -142,24 +142,30 @@ function histSim(a, b) { let s = 0; for (let i = 0; i < 64; i++) s += Math.min(a
 function regroup() {
   const T = +$('thr').value, nearOnly = $('nearOnly').checked;
   $('thrv').textContent = T;
-  const n = photos.length, parent = photos.map((_, i) => i);
-  const find = i => { while (parent[i] !== i) i = parent[i] = parent[parent[i]]; return i; };
-  const unite = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[b] = a; };
   const WINDOW = 30 * 60 * 1000;
-  for (let i = 0; i < n; i++) {
-    const a = photos[i];
-    for (let j = i + 1; j < n; j++) {
-      const b = photos[j];
-      const dt = Math.abs(b.date - a.date);
-      if (nearOnly && dt > WINDOW) break;
-      let lim = T;
-      if (dt < 60 * 1000) lim += 4;
-      if (ham(a, b) <= lim && histSim(a, b) >= 0.6) unite(i, j);
+  // distanza tra due foto, oppure -1 se non sono abbastanza simili
+  const dist = (a, b) => {
+    const dt = Math.abs(b.date - a.date);
+    if (nearOnly && dt > WINDOW) return -1;
+    const lim = T + (dt < 60 * 1000 ? 4 : 0);
+    const d = ham(a, b);
+    return d <= lim && histSim(a, b) >= 0.6 ? d : -1;
+  };
+  // Complete linkage: una foto entra in un gruppo solo se somiglia a TUTTE le foto del gruppo;
+  // se può entrare in più gruppi, va in quello con la somiglianza media maggiore.
+  const all = [], active = [];
+  for (const p of photos) {
+    if (nearOnly) for (let k = active.length - 1; k >= 0; k--) if (p.date - active[k].last > WINDOW) active.splice(k, 1);
+    let best = null, bestAvg = Infinity;
+    for (const g of active) {
+      let sum = 0, ok = true;
+      for (const q of g.items) { const d = dist(q, p); if (d < 0) { ok = false; break; } sum += d; }
+      if (ok && sum / g.items.length < bestAvg) { bestAvg = sum / g.items.length; best = g; }
     }
+    if (best) { best.items.push(p); best.last = p.date; }
+    else { const g = { items: [p], last: p.date }; all.push(g); active.push(g); }
   }
-  const map = new Map();
-  photos.forEach((p, i) => { const r = find(i); if (!map.has(r)) map.set(r, []); map.get(r).push(p); });
-  groups = [...map.values()].filter(g => g.length > 1);
+  groups = all.map(g => g.items).filter(g => g.length > 1);
   photos.forEach(p => p.keep = true);
   for (const g of groups) { g.forEach(p => p.keep = false); g.reduce((a, b) => (score(b) > score(a) ? b : a)).keep = true; }
   page = 0;
