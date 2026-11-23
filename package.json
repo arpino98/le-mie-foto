@@ -1,0 +1,20 @@
+{
+  "name": "le-mie-foto",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Le mie foto: pulizia foto simili e album per persone e animali (Android e iPhone)",
+  "scripts": {
+    "sync": "cap sync",
+    "android": "cap open android",
+    "ios": "cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/ios": "^8.0.0",
+    "capacitor-galleria": "file:plugins/galleria"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.0.0"
+  }
+}

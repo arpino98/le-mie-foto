@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f1f1f">
+<title>Le mie foto</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<nav class="tabbar">
+  <button id="navSim" class="on"><span class="ico">🗂️</span>Foto simili</button>
+  <button id="navCls"><span class="ico">👥</span>Persone e animali</button>
+</nav>
+
+<!-- ================= FOTO SIMILI ================= -->
+<section id="mod-sim" class="mod">
+<header>
+  <div class="hrow">
+    <h1>Foto simili</h1>
+    <span id="s-status" class="muted">Nessuna foto scelta</span>
+  </div>
+  <div class="hrow">
+    <select id="s-range" class="native-only">
+      <option value="30">Ultimi 30 giorni</option>
+      <option value="90" selected>Ultimi 3 mesi</option>
+      <option value="365">Ultimo anno</option>
+      <option value="0">Tutte le foto</option>
+    </select>
+    <button id="s-pick" class="primary">Scegli foto</button>
+    <input id="s-file" type="file" accept="image/*" multiple hidden>
+  </div>
+  <div class="bar"><div id="s-prog"></div></div>
+  <div id="s-tools" class="hrow tools" hidden>
+    <label class="sl">Sensibilità
+      <input id="s-thr" type="range" min="4" max="22" value="12">
+      <span id="s-thrv" class="muted"></span></label>
+    <label class="sl"><input id="s-nearOnly" type="checkbox" checked> solo foto scattate a breve distanza</label>
+  </div>
+</header>
+
+<main>
+  <div id="s-intro" class="box intro">
+    <p><b>Come funziona</b> (tutto avviene sul telefono, niente viene caricato online):</p>
+    <ol>
+      <li>Scegli il periodo e premi <i>Scegli foto</i>. La prima volta il telefono ti chiede il permesso di vedere le foto.</li>
+      <li>Le foto vengono raggruppate per somiglianza. In ogni gruppo la foto proposta da tenere è in <span class="k">verde</span> (la più nitida), le altre in <span class="d">rosso</span>. Tocca una foto per cambiarne lo stato; puoi tenerne anche più di una. Con 🔍 la vedi grande.</li>
+      <li>Con <i>Sensibilità</i> allarghi o restringi i gruppi (più alta = gruppi più ampi).</li>
+      <li><i>Sposta scartate nel cestino</i> mette le foto rosse nel cestino del telefono (su iPhone: <i>Eliminati di recente</i>). Restano lì circa 30 giorni e puoi recuperarle.</li>
+    </ol>
+  </div>
+  <div id="s-msg"></div>
+  <div id="s-groups"></div>
+  <div class="pager" id="s-pager"></div>
+</main>
+
+<div class="actionbar" id="s-actions" hidden>
+  <button id="s-apply" class="danger" disabled>Sposta scartate nel cestino</button>
+</div>
+</section>
+
+<!-- ================= PERSONE E ANIMALI ================= -->
+<section id="mod-cls" class="mod" style="display:none">
+<header>
+  <div class="hrow">
+    <h1>Persone e animali</h1>
+    <span id="c-status" class="muted">Carico i modelli di riconoscimento…</span>
+  </div>
+  <div class="hrow">
+    <select id="c-range" class="native-only">
+      <option value="30">Ultimi 30 giorni</option>
+      <option value="90" selected>Ultimi 3 mesi</option>
+      <option value="365">Ultimo anno</option>
+      <option value="0">Tutte le foto</option>
+    </select>
+    <button id="c-pick" class="primary">Scegli foto</button>
+    <button id="c-stop" disabled>Interrompi</button>
+    <input id="c-file" type="file" accept="image/*" multiple hidden>
+  </div>
+  <div class="bar"><div id="c-prog"></div></div>
+</header>
+
+<main>
+  <div id="c-intro" class="box intro">
+    <p><b>Come funziona</b> (tutto avviene sul telefono: niente viene caricato online, neanche i modelli di riconoscimento).</p>
+    <ol>
+      <li>Scegli il periodo e premi <i>Scegli foto</i>.</li>
+      <li>L'app trova i volti e li raggruppa per persona, e individua le foto con gatti e cani. Ci vuole tempo: indicativamente qualche foto al secondo. Tieni lo schermo acceso.</li>
+      <li>Nella scheda <i>Persone</i> scrivi un nome sotto ogni gruppo (es. "Vincenzo"). Se la stessa persona compare in più gruppi, dai lo stesso nome: verranno uniti. Tocca un volto sbagliato per escluderlo; tienilo premuto per vedere la foto.</li>
+      <li>Nella scheda <i>Animali</i> trovi le foto con gatti o cani: escludi quelle sbagliate e scegli il nome dell'album.</li>
+      <li><i>Crea album</i> mette le foto negli album con quei nomi. Gli originali restano dove sono. Una foto con più persone finisce in più album.</li>
+      <li>Con <i>Ricorda persone</i> l'app memorizza i nomi: la volta dopo le persone già note vengono riconosciute da sole.</li>
+    </ol>
+    <p class="muted">Gli animali vengono riconosciuti come gatto o cane, non il singolo animale. Le "impronte" dei volti restano solo su questo telefono.</p>
+  </div>
+  <div id="c-msg"></div>
+  <div id="c-work" style="display:none">
+    <div class="tabs">
+      <button id="c-tPeople" class="on">Persone</button>
+      <button id="c-tPets">Animali</button>
+    </div>
+    <div class="hrow tools">
+      <label class="sl" title="Più alto = gruppi più piccoli ma più sicuri.">Rigore
+        <input id="c-thr" type="range" min="45" max="80" value="62"><span id="c-thrv" class="muted"></span></label>
+      <label class="sl"><input id="c-showSingles" type="checkbox"> mostra volti comparsi una volta sola</label>
+    </div>
+    <div id="c-people"></div>
+    <div id="c-pets" style="display:none"></div>
+  </div>
+  <div class="box small">
+    <span id="c-knownInfo" class="muted">Nessuna persona ricordata.</span>
+    <button id="c-forget" class="link" hidden>Dimentica le persone ricordate</button>
+  </div>
+</main>
+
+<div class="actionbar" id="c-actions" hidden>
+  <button id="c-saveNames" disabled>Ricorda persone</button>
+  <button id="c-make" class="go" disabled>Crea album</button>
+</div>
+</section>
+
+<div id="modal"><img id="big" alt=""><div class="cap" id="bigcap"></div><button class="close" aria-label="Chiudi">✕</button></div>
+<div id="dialog" hidden><div class="dlg"><p id="dlg-text"></p><div class="dlg-btns"><button id="dlg-no">Annulla</button><button id="dlg-yes" class="primary">Conferma</button></div></div></div>
+
+<script src="human.js"></script>
+<script src="galleria.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
