@@ -29,6 +29,18 @@
 
 Tutto resta sul telefono. Niente viene caricato su internet, nemmeno i modelli di riconoscimento.
 
+## Versione per computer
+
+Nella cartella `computer/` c'è **Le_mie_foto.html**: la stessa cosa, ma per le foto copiate sul PC.
+
+1. Scarica il file (apri `computer/Le_mie_foto.html` qui su GitHub e premi il pulsante *Download raw file*).
+2. Aprilo con **Chrome** o **Edge** (doppio clic, o trascinalo nella finestra del browser). Funziona senza internet.
+3. Premi *Scegli cartella foto* e scegli la cartella in cui hai copiato le foto dall'iPhone, anche in HEIC.
+
+Ha tre schede: *Foto simili*, *Classifica per persone e animali* e *Cosa occupa spazio*. Le foto scartate vanno nella sottocartella `_da_cancellare` (niente viene eliminato), ogni operazione si può annullare ed è scritta in `_registro_operazioni.csv`. L'analisi viene salvata nella cartella, così la volta dopo riparte da dove eri rimasta.
+
+Il file contiene il decodificatore HEIC libheif (licenza LGPL 3.0, incluso senza modifiche) e il modello MobileNet per gli animali (licenza Apache 2.0).
+
 ## Installarla su Android (gratis)
 
 1. Dalla pagina **Releases** del progetto su GitHub scarica dal telefono il file **LeMieFoto.apk**.
