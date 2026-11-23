@@ -2,9 +2,10 @@
 // ======================= Utilità comuni =======================
 const G = window.Galleria;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
-const fmtB = b => !b ? '' : b > 1e9 ? (b/1e9).toFixed(2) + ' GB' : (b/1e6).toFixed(1) + ' MB';
+const fmtB = b => !b ? '' : b > 1e9 ? (b/1e9).toFixed(2) + ' GB' : b > 1e6 ? (b/1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b/1e3)) + ' KB';
 const fmtD = t => t ? new Date(t).toLocaleString('it-IT', { dateStyle: 'short', timeStyle: 'short' }) : '';
 const fmtT = s => s < 60 ? Math.round(s) + ' s' : s < 3600 ? Math.round(s / 60) + ' min' : (s / 3600).toFixed(1) + ' ore';
+const fmtDur = s => { s = Math.round(s); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 
 function ask(text, yes = 'Conferma') {
   return new Promise(res => {
@@ -28,7 +29,7 @@ async function zoom(p, caption) {
   try {
     bigUrl = URL.createObjectURL(await p.load(2048));
     img.src = bigUrl;
-    document.getElementById('bigcap').textContent = caption || [p.name, fmtD(p.date)].filter(Boolean).join(' · ');
+    document.getElementById('bigcap').textContent = caption || [p.name, fmtD(p.date), p.kind === 'video' ? 'video ' + fmtDur(p.duration) : ''].filter(Boolean).join(' · ');
   } catch (e) { document.getElementById('bigcap').textContent = 'Non riesco ad aprire la foto.'; }
 }
 document.getElementById('modal').onclick = () => { document.getElementById('modal').style.display = 'none'; };
@@ -53,186 +54,119 @@ function permissionNote(note) {
 function limitedNote(note) {
   note('warn', 'Hai dato accesso solo ad alcune foto: l\'app vede solo quelle. Per analizzarle tutte concedi l\'accesso completo nelle impostazioni del telefono.');
 }
-
-// ======================= FOTO SIMILI =======================
-(() => {
-const $ = id => document.getElementById('s-' + id);
-let photos = [], groups = [], page = 0;
-const PER_PAGE = 20;
-
-$('pick').onclick = async () => {
-  $('msg').innerHTML = '';
-  let res;
-  try { res = await G.choose(+$('range').value, $('file')); }
-  catch (e) { if (e.message === 'permesso') permissionNote(note); else note('warn', 'Errore: ' + esc(e.message)); return; }
-  if (!res.items.length) { setStatus(G.isNative ? 'Nessuna foto in questo periodo' : 'Nessuna foto scelta'); return; }
-  if (res.limited) limitedNote(note);
-  start(res.items);
-};
-
-async function start(list) {
-  $('intro').style.display = 'none';
-  $('pick').disabled = true;
-  photos.forEach(p => p.thumb && URL.revokeObjectURL(p.thumb));
-  photos = [];
-  await G.clearCache(); G.keepAwake(true);
-  let done = 0, failed = 0;
-  const queue = list.slice();
-  const worker = async () => {
-    while (queue.length) {
-      const it = queue.shift();
-      try { photos.push(await analyse(it)); } catch (e) { failed++; console.warn('Salto', it.name, e); }
-      done++;
-      if (done % 5 === 0 || done === list.length) { $('prog').style.width = (100 * done / list.length) + '%'; setStatus(`Analizzo ${done} / ${list.length}`); }
-    }
+function restoreNote(note, onDone) {
+  if (!G.canRestore || !G.lastTrashed().length) return;
+  const d = document.createElement('div'); d.className = 'done';
+  d.innerHTML = 'Hai cambiato idea? <button class="link">Rimetti al loro posto le ultime spostate</button>';
+  d.querySelector('button').onclick = async () => {
+    try { const n = await G.restoreLast(); d.innerHTML = n ? `Ripristinate <b>${n}</b> foto. Rifai l'analisi per vederle di nuovo.` : 'Ripristino annullato.'; if (n && onDone) onDone(); }
+    catch (e) { d.textContent = 'Ripristino non riuscito: ' + e.message; }
   };
-  await Promise.all([worker(), worker(), worker(), worker()]);
-  G.keepAwake(false);
-  $('pick').disabled = false;
-  if (failed) note('warn', `${failed} foto non sono state lette (formato non supportato o non scaricata da iCloud) e sono state saltate.`);
-  photos.sort((a, b) => (a.date - b.date) || a.path.localeCompare(b.path));
-  photos.forEach((p, i) => p.idx = i);
-  $('tools').hidden = false; $('actions').hidden = false;
-  regroup();
+  note.box().appendChild(d);
 }
 
-async function analyse(it) {
-  const blob = await it.load(360);
-  const date = it.date || (it.file && ((await exifDate(it.file)) || it.file.lastModified)) || 0;
-  const bmp = await createImageBitmap(blob);
-  const w = it.w || bmp.width, h = it.h || bmp.height;
-  const s = Math.min(1, 360 / Math.max(bmp.width, bmp.height));
-  const tw = Math.max(1, Math.round(bmp.width * s)), th = Math.max(1, Math.round(bmp.height * s));
-  const tc = new OffscreenCanvas(tw, th), tx = tc.getContext('2d');
-  tx.imageSmoothingQuality = 'high'; tx.drawImage(bmp, 0, 0, tw, th);
-  bmp.close();
-  const thumb = URL.createObjectURL(await tc.convertToBlob({ type: 'image/jpeg', quality: .75 }));
-  // nitidezza: varianza del laplaciano
-  const td = tx.getImageData(0, 0, tw, th).data;
-  const g = new Float32Array(tw * th);
-  for (let i = 0; i < g.length; i++) g[i] = .299 * td[4*i] + .587 * td[4*i+1] + .114 * td[4*i+2];
-  let sum = 0, sum2 = 0, n = 0;
-  for (let y = 1; y < th - 1; y++) for (let x = 1; x < tw - 1; x++) {
-    const i = y * tw + x, l = 4 * g[i] - g[i-1] - g[i+1] - g[i-tw] - g[i+tw];
-    sum += l; sum2 += l * l; n++;
-  }
-  const sharp = n ? sum2 / n - (sum / n) ** 2 : 0;
-  // dHash 64 bit
-  const hc = new OffscreenCanvas(9, 8), hx = hc.getContext('2d');
-  hx.imageSmoothingQuality = 'high'; hx.drawImage(tc, 0, 0, 9, 8);
-  const hd = hx.getImageData(0, 0, 9, 8).data;
-  const gr = []; for (let i = 0; i < 72; i++) gr.push(.299 * hd[4*i] + .587 * hd[4*i+1] + .114 * hd[4*i+2]);
-  let hi = 0, lo = 0, bit = 0;
-  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++, bit++) {
-    if (gr[y*9 + x] > gr[y*9 + x + 1]) { if (bit < 32) hi |= (1 << bit); else lo |= (1 << (bit - 32)); }
-  }
-  // istogramma colori 4x4x4
-  const cc = new OffscreenCanvas(32, 32), cx = cc.getContext('2d');
-  cx.drawImage(tc, 0, 0, 32, 32);
-  const cd = cx.getImageData(0, 0, 32, 32).data, hist = new Float32Array(64);
-  for (let i = 0; i < cd.length; i += 4) hist[(cd[i] >> 6) * 16 + (cd[i+1] >> 6) * 4 + (cd[i+2] >> 6)]++;
-  for (let i = 0; i < 64; i++) hist[i] /= 1024;
-  return { ...it, date, w, h, hash: [hi >>> 0, lo >>> 0], hist, sharp, thumb, keep: false };
+// Miniatura caricata solo quando serve (per le foto già analizzate in passato)
+function setThumb(img, p) {
+  if (p.thumb) { img.src = p.thumb; return; }
+  if (!p._thumbP) p._thumbP = p.load(360).then(b => (p.thumb = URL.createObjectURL(b))).catch(() => (p._thumbP = null, ''));
+  p._thumbP.then(u => { if (u) img.src = u; });
 }
+
+// ======================= Analisi salvata (IndexedDB) =======================
+const Store = (() => {
+  let dbp = null;
+  const open = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open('le-mie-foto', 1);
+    r.onupgradeneeded = () => { for (const s of ['sim', 'cls', 'state']) r.result.createObjectStore(s); };
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  }));
+  const tx = async (store, mode, fn) => { const db = await open(); return new Promise((res, rej) => { const t = db.transaction(store, mode); const out = fn(t.objectStore(store)); t.oncomplete = () => res(out && out.result !== undefined ? out.result : undefined); t.onerror = () => rej(t.error); }); };
+  return {
+    async getMany(store, keys) {
+      const db = await open(); const m = new Map();
+      await new Promise((res, rej) => { const t = db.transaction(store); const os = t.objectStore(store); for (const k of keys) { const r = os.get(k); r.onsuccess = () => { if (r.result !== undefined) m.set(k, r.result); }; } t.oncomplete = res; t.onerror = () => rej(t.error); });
+      return m;
+    },
+    putMany: (store, entries) => entries.length ? tx(store, 'readwrite', os => { for (const [k, v] of entries) os.put(v, k); }) : Promise.resolve(),
+    get: (k) => tx('state', 'readonly', os => os.get(k)),
+    set: (k, v) => tx('state', 'readwrite', os => { os.put(v, k); }),
+    clear: (store) => tx(store, 'readwrite', os => { os.clear(); }),
+  };
+})();
+const noFaceData = () => localStorage.getItem('no-dati-volti') === '1';
+
+// ======================= Analisi foto (comune a "Foto simili" e "Spazio") =======================
+const Analyzer = (() => {
+  async function analyseOne(it) {
+    const blob = await it.load(360);
+    const date = it.date || (it.file && ((await exifDate(it.file)) || it.file.lastModified)) || 0;
+    const bmp = await createImageBitmap(blob);
+    const w = it.w || bmp.width, h = it.h || bmp.height;
+    const s = Math.min(1, 360 / Math.max(bmp.width, bmp.height));
+    const tw = Math.max(1, Math.round(bmp.width * s)), th = Math.max(1, Math.round(bmp.height * s));
+    const tc = new OffscreenCanvas(tw, th), tx = tc.getContext('2d');
+    tx.imageSmoothingQuality = 'high'; tx.drawImage(bmp, 0, 0, tw, th);
+    bmp.close();
+    const thumb = URL.createObjectURL(await tc.convertToBlob({ type: 'image/jpeg', quality: .75 }));
+    const td = tx.getImageData(0, 0, tw, th).data;
+    const g = new Float32Array(tw * th); let lumSum = 0;
+    for (let i = 0; i < g.length; i++) { g[i] = .299 * td[4*i] + .587 * td[4*i+1] + .114 * td[4*i+2]; lumSum += g[i]; }
+    let sum = 0, sum2 = 0, n = 0;
+    for (let y = 1; y < th - 1; y++) for (let x = 1; x < tw - 1; x++) {
+      const i = y * tw + x, l = 4 * g[i] - g[i-1] - g[i+1] - g[i-tw] - g[i+tw];
+      sum += l; sum2 += l * l; n++;
+    }
+    const sharp = n ? sum2 / n - (sum / n) ** 2 : 0;
+    const hc = new OffscreenCanvas(9, 8), hx = hc.getContext('2d');
+    hx.imageSmoothingQuality = 'high'; hx.drawImage(tc, 0, 0, 9, 8);
+    const hd = hx.getImageData(0, 0, 9, 8).data;
+    const gr = []; for (let i = 0; i < 72; i++) gr.push(.299 * hd[4*i] + .587 * hd[4*i+1] + .114 * hd[4*i+2]);
+    let hi = 0, lo = 0, bit = 0;
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++, bit++) {
+      if (gr[y*9 + x] > gr[y*9 + x + 1]) { if (bit < 32) hi |= (1 << bit); else lo |= (1 << (bit - 32)); }
+    }
+    const cc = new OffscreenCanvas(32, 32), cx = cc.getContext('2d');
+    cx.drawImage(tc, 0, 0, 32, 32);
+    const cd = cx.getImageData(0, 0, 32, 32).data, hist = new Float32Array(64);
+    for (let i = 0; i < cd.length; i += 4) hist[(cd[i] >> 6) * 16 + (cd[i+1] >> 6) * 4 + (cd[i+2] >> 6)]++;
+    for (let i = 0; i < 64; i++) hist[i] /= 1024;
+    const data = { date, w, h, hash: [hi >>> 0, lo >>> 0], hist: Array.from(hist, v => +v.toFixed(4)), sharp, lum: lumSum / g.length };
+    return { data, thumb };
+  }
+  // Analizza le foto; quelle già analizzate (stesso id e stessa data di modifica) vengono riprese dal salvataggio.
+  async function run(list, onProgress) {
+    const saved = await Store.getMany('sim', list.map(it => it.key)).catch(() => new Map());
+    const out = [], pending = [];
+    let done = 0, failed = 0, reused = 0;
+    const flush = () => { const e = pending.splice(0); return Store.putMany('sim', e).catch(() => {}); };
+    const queue = [];
+    for (const it of list) {
+      const d = saved.get(it.key);
+      if (d) { out.push({ ...it, ...d, date: it.date || d.date, hist: Float32Array.from(d.hist), thumb: null }); reused++; done++; }
+      else queue.push(it);
+    }
+    onProgress(done, list.length, reused);
+    const worker = async () => {
+      while (queue.length) {
+        const it = queue.shift();
+        try { const { data, thumb } = await analyseOne(it); out.push({ ...it, ...data, hist: Float32Array.from(data.hist), thumb }); pending.push([it.key, data]); }
+        catch (e) { failed++; console.warn('Salto', it.name, e); }
+        done++;
+        if (pending.length >= 25) flush();
+        if (done % 5 === 0 || done === list.length) onProgress(done, list.length, reused);
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    await flush();
+    out.sort((a, b) => (a.date - b.date) || a.path.localeCompare(b.path));
+    return { photos: out, failed, reused };
+  }
+  return { run };
+})();
 
 function pop(x) { x -= (x >>> 1) & 0x55555555; x = (x & 0x33333333) + ((x >>> 2) & 0x33333333); return (((x + (x >>> 4)) & 0x0F0F0F0F) * 0x01010101) >>> 24; }
 function ham(a, b) { return pop(a.hash[0] ^ b.hash[0]) + pop(a.hash[1] ^ b.hash[1]); }
 function histSim(a, b) { let s = 0; for (let i = 0; i < 64; i++) s += Math.min(a.hist[i], b.hist[i]); return s; }
-
-function regroup() {
-  const T = +$('thr').value, nearOnly = $('nearOnly').checked;
-  $('thrv').textContent = T;
-  const WINDOW = 30 * 60 * 1000;
-  // distanza tra due foto, oppure -1 se non sono abbastanza simili
-  const dist = (a, b) => {
-    const dt = Math.abs(b.date - a.date);
-    if (nearOnly && dt > WINDOW) return -1;
-    const lim = T + (dt < 60 * 1000 ? 4 : 0);
-    const d = ham(a, b);
-    return d <= lim && histSim(a, b) >= 0.6 ? d : -1;
-  };
-  // Complete linkage: una foto entra in un gruppo solo se somiglia a TUTTE le foto del gruppo;
-  // se può entrare in più gruppi, va in quello con la somiglianza media maggiore.
-  const all = [], active = [];
-  for (const p of photos) {
-    if (nearOnly) for (let k = active.length - 1; k >= 0; k--) if (p.date - active[k].last > WINDOW) active.splice(k, 1);
-    let best = null, bestAvg = Infinity;
-    for (const g of active) {
-      let sum = 0, ok = true;
-      for (const q of g.items) { const d = dist(q, p); if (d < 0) { ok = false; break; } sum += d; }
-      if (ok && sum / g.items.length < bestAvg) { bestAvg = sum / g.items.length; best = g; }
-    }
-    if (best) { best.items.push(p); best.last = p.date; }
-    else { const g = { items: [p], last: p.date }; all.push(g); active.push(g); }
-  }
-  groups = all.map(g => g.items).filter(g => g.length > 1);
-  photos.forEach(p => p.keep = true);
-  for (const g of groups) { g.forEach(p => p.keep = false); g.reduce((a, b) => (score(b) > score(a) ? b : a)).keep = true; }
-  page = 0;
-  render();
-}
-function score(p) { return Math.log(1 + p.sharp) + 0.15 * Math.log(p.w * p.h); }
-
-function render() {
-  const drop = photos.filter(p => !p.keep);
-  const bytes = drop.reduce((s, p) => s + (p.size || 0), 0);
-  setStatus(`${photos.length} foto · ${groups.length} gruppi · ${drop.length} da scartare${bytes ? ' (' + fmtB(bytes) + ')' : ''}`);
-  $('apply').disabled = !drop.length;
-  $('apply').textContent = drop.length ? `Sposta ${drop.length} scartate nel cestino` : 'Sposta scartate nel cestino';
-  const box = $('groups'); box.innerHTML = '';
-  if (!groups.length) { box.innerHTML = '<div class="box">Nessun gruppo di foto simili con questa sensibilità. Prova ad alzarla.</div>'; $('pager').innerHTML = ''; return; }
-  const pages = Math.ceil(groups.length / PER_PAGE);
-  for (const [gi, g] of groups.slice(page * PER_PAGE, (page + 1) * PER_PAGE).entries()) {
-    const el = document.createElement('div'); el.className = 'group';
-    const gsz = g.filter(p => !p.keep).reduce((s, p) => s + (p.size || 0), 0);
-    el.innerHTML = `<div class="ghead"><span>Gruppo ${page * PER_PAGE + gi + 1} · ${g.length} foto · ${fmtD(g[0].date)}${gsz ? ' · libera ' + fmtB(gsz) : ''}</span>
-      <span><button data-a="all">Tieni tutte</button> <button data-a="best">Solo la proposta</button></span></div><div class="thumbs"></div>`;
-    const th = el.querySelector('.thumbs');
-    for (const p of g) {
-      const d = document.createElement('div'); d.className = 'ph' + (p.keep ? ' keep' : '');
-      d.innerHTML = `<img loading="lazy" src="${p.thumb}"><span class="tag">${p.keep ? 'TIENI' : 'SCARTA'}</span><button class="zoom" aria-label="Vedi grande">🔍</button>
-        <div class="meta">${p.w}×${p.h}${p.size ? ' · ' + fmtB(p.size) : ''}</div>`;
-      d.onclick = e => { if (e.target.classList.contains('zoom')) { zoom(p); return; } p.keep = !p.keep; render(); };
-      th.appendChild(d);
-    }
-    el.querySelector('[data-a=all]').onclick = () => { g.forEach(p => p.keep = true); render(); };
-    el.querySelector('[data-a=best]').onclick = () => { const b = g.reduce((a, c) => score(c) > score(a) ? c : a); g.forEach(p => p.keep = p === b); render(); };
-    box.appendChild(el);
-  }
-  const pg = $('pager'); pg.innerHTML = '';
-  if (pages > 1) {
-    const prev = document.createElement('button'); prev.textContent = '‹ Indietro'; prev.disabled = page === 0; prev.onclick = () => { page--; render(); scrollTo(0, 0); };
-    const next = document.createElement('button'); next.textContent = 'Avanti ›'; next.disabled = page >= pages - 1; next.onclick = () => { page++; render(); scrollTo(0, 0); };
-    const s = document.createElement('span'); s.className = 'muted'; s.textContent = `Pagina ${page + 1} di ${pages}`;
-    pg.append(prev, s, next);
-  }
-}
-function setStatus(t) { $('status').textContent = t; }
-function note(cls, html) { const d = document.createElement('div'); d.className = cls; d.innerHTML = html; $('msg').appendChild(d); }
-
-$('thr').oninput = () => { $('thrv').textContent = $('thr').value; };
-$('thr').onchange = () => photos.length && regroup();
-$('nearOnly').onchange = () => photos.length && regroup();
-$('thrv').textContent = $('thr').value;
-
-$('apply').onclick = async () => {
-  const drop = photos.filter(p => !p.keep);
-  if (!drop.length) return;
-  if (!G.isNative) { note('warn', 'Lo spostamento nel cestino funziona solo nell\'app installata sul telefono.'); return; }
-  const where = G.platform === 'ios' ? 'in "Eliminati di recente"' : 'nel cestino';
-  if (!await ask(`Spostare ${drop.length} foto ${where}?\nPotrai recuperarle per circa 30 giorni.`, 'Sposta')) return;
-  $('apply').disabled = true;
-  setStatus('Il telefono chiede conferma…');
-  try {
-    const ok = await G.trash(drop);
-    if (!ok) { note('warn', 'Operazione annullata: nessuna foto spostata.'); render(); return; }
-    const gone = new Set(drop);
-    drop.forEach(p => p.thumb && URL.revokeObjectURL(p.thumb));
-    photos = photos.filter(p => !gone.has(p));
-    note('done', `Spostate <b>${drop.length}</b> foto ${where}. Se cambi idea le trovi lì per circa 30 giorni.`);
-    regroup();
-  } catch (e) { note('warn', 'Non sono riuscita a spostare le foto: ' + esc(e.message)); render(); }
-};
 
 // Data di scatto (solo per la prova nel browser: sul telefono arriva già dalla galleria)
 async function exifDate(file) {
@@ -262,19 +196,180 @@ async function exifDate(file) {
   } catch (e) {}
   return null;
 }
+
+function makeNote(prefix) {
+  const box = () => document.getElementById(prefix + 'msg');
+  const note = (cls, html) => { const d = document.createElement('div'); d.className = cls; d.innerHTML = html; box().appendChild(d); return d; };
+  note.box = box;
+  return note;
+}
+
+// Pulsanti comuni: elimina analisi salvata
+document.querySelectorAll('.forgetAnalysis').forEach(b => b.onclick = async () => {
+  if (!await ask('Eliminare l\'analisi salvata? La prossima volta le foto verranno rianalizzate da capo. Le persone ricordate restano.', 'Elimina')) return;
+  await Store.clear('sim'); await Store.clear('cls'); await Store.clear('state');
+  document.querySelectorAll('.forgetAnalysis').forEach(x => x.textContent = 'Analisi salvata eliminata');
+});
+
+// ======================= FOTO SIMILI =======================
+(() => {
+const $ = id => document.getElementById('s-' + id);
+const note = makeNote('s-');
+let photos = [], groups = [], page = 0, choices = new Map(); // id -> tieni (scelte fatte a mano)
+const PER_PAGE = 20;
+Store.get('simChoices').then(c => { if (c) choices = new Map(c); }).catch(() => {});
+const saveChoices = () => Store.set('simChoices', [...choices]).catch(() => {});
+
+$('pick').onclick = async () => {
+  $('msg').innerHTML = '';
+  let res;
+  try { res = await G.choose(+$('range').value, $('file')); }
+  catch (e) { if (e.message === 'permesso') permissionNote(note); else note('warn', 'Errore: ' + esc(e.message)); return; }
+  if (!res.items.length) { setStatus(G.isNative ? 'Nessuna foto in questo periodo' : 'Nessuna foto scelta'); return; }
+  if (res.limited) limitedNote(note);
+  start(res.items);
+};
+
+async function start(list) {
+  $('intro').style.display = 'none';
+  $('pick').disabled = true;
+  photos.forEach(p => p.thumb && URL.revokeObjectURL(p.thumb));
+  photos = [];
+  await G.clearCache(); G.keepAwake(true);
+  const r = await Analyzer.run(list, (done, tot, reused) => { $('prog').style.width = (100 * done / tot) + '%'; setStatus(`Analizzo ${done} / ${tot}` + (reused ? ` (${reused} già analizzate)` : '')); });
+  G.keepAwake(false);
+  photos = r.photos;
+  $('pick').disabled = false;
+  if (r.reused) note('done', `${r.reused} foto erano già state analizzate e sono state riprese dal salvataggio.`);
+  if (r.failed) note('warn', `${r.failed} foto non sono state lette (formato non supportato o non scaricata da iCloud) e sono state saltate.`);
+  $('tools').hidden = false; $('actions').hidden = false;
+  regroup();
+  G.fillSizes(photos, () => render(true));
+}
+
+function regroup() {
+  const T = +$('thr').value, nearOnly = $('nearOnly').checked;
+  $('thrv').textContent = T;
+  const WINDOW = 30 * 60 * 1000;
+  // distanza tra due foto, oppure -1 se non sono abbastanza simili
+  const dist = (a, b) => {
+    const dt = Math.abs(b.date - a.date);
+    if (nearOnly && dt > WINDOW) return -1;
+    const lim = T + (dt < 60 * 1000 ? 4 : 0);
+    const d = ham(a, b);
+    return d <= lim && histSim(a, b) >= 0.6 ? d : -1;
+  };
+  // Complete linkage: una foto entra in un gruppo solo se somiglia a TUTTE le foto del gruppo;
+  // se può entrare in più gruppi, va in quello con la somiglianza media maggiore.
+  const all = [], active = [];
+  for (const p of photos) {
+    if (nearOnly) for (let k = active.length - 1; k >= 0; k--) if (p.date - active[k].last > WINDOW) active.splice(k, 1);
+    let best = null, bestAvg = Infinity;
+    for (const g of active) {
+      let sum = 0, ok = true;
+      for (const q of g.items) { const d = dist(q, p); if (d < 0) { ok = false; break; } sum += d; }
+      if (ok && sum / g.items.length < bestAvg) { bestAvg = sum / g.items.length; best = g; }
+    }
+    if (best) { best.items.push(p); best.last = p.date; }
+    else { const g = { items: [p], last: p.date }; all.push(g); active.push(g); }
+  }
+  groups = all.map(g => g.items).filter(g => g.length > 1);
+  photos.forEach(p => p.keep = true);
+  for (const g of groups) {
+    g.forEach(p => p.keep = false); g.reduce((a, b) => (score(b) > score(a) ? b : a)).keep = true;
+    g.forEach(p => { if (choices.has(p.id)) p.keep = choices.get(p.id); });
+  }
+  page = 0;
+  render();
+}
+function score(p) { return Math.log(1 + p.sharp) + 0.15 * Math.log(p.w * p.h); }
+const weight = p => (p.size || 0) + (p.liveSize || 0);
+
+function render(statusOnly) {
+  const drop = photos.filter(p => !p.keep);
+  const bytes = drop.reduce((s, p) => s + weight(p), 0);
+  setStatus(`${photos.length} foto · ${groups.length} gruppi · ${drop.length} da scartare${bytes ? ' (' + fmtB(bytes) + ')' : ''}`);
+  $('apply').disabled = !drop.length;
+  $('apply').textContent = drop.length ? `Sposta ${drop.length} scartate nel cestino` : 'Sposta scartate nel cestino';
+  if (statusOnly) { document.querySelectorAll('#s-groups .group').forEach(el => el._upd && el._upd()); return; }
+  const box = $('groups'); box.innerHTML = '';
+  if (!groups.length) { box.innerHTML = '<div class="box">Nessun gruppo di foto simili con questa sensibilità. Prova ad alzarla.</div>'; $('pager').innerHTML = ''; return; }
+  const pages = Math.ceil(groups.length / PER_PAGE);
+  for (const [gi, g] of groups.slice(page * PER_PAGE, (page + 1) * PER_PAGE).entries()) {
+    const el = document.createElement('div'); el.className = 'group';
+    el.innerHTML = `<div class="ghead"><span class="gtitle"></span>
+      <span><button data-a="all">Tieni tutte</button> <button data-a="best">Solo la proposta</button></span></div><div class="thumbs"></div>`;
+    el._upd = () => {
+      const gsz = g.filter(p => !p.keep).reduce((s, p) => s + weight(p), 0);
+      el.querySelector('.gtitle').textContent = `Gruppo ${page * PER_PAGE + gi + 1} · ${g.length} foto · ${fmtD(g[0].date)}${gsz ? ' · libera ' + fmtB(gsz) : ''}`;
+      el.querySelectorAll('.ph').forEach((d, i) => { const p = g[i]; const lv = d.querySelector('.live'); if (lv && p.liveSize) lv.textContent = 'LIVE + video ' + fmtB(p.liveSize); const m = d.querySelector('.meta'); m.textContent = `${p.w}×${p.h}${p.size ? ' · ' + fmtB(p.size) : ''}`; });
+    };
+    const th = el.querySelector('.thumbs');
+    for (const p of g) {
+      const d = document.createElement('div'); d.className = 'ph' + (p.keep ? ' keep' : '');
+      d.innerHTML = `<img alt=""><span class="tag">${p.keep ? 'TIENI' : 'SCARTA'}</span><button class="zoom" aria-label="Vedi grande">🔍</button>
+        ${p.live ? '<span class="live">LIVE</span>' : ''}<div class="meta"></div>`;
+      setThumb(d.querySelector('img'), p);
+      d.onclick = e => { if (e.target.classList.contains('zoom')) { zoom(p); return; } p.keep = !p.keep; choices.set(p.id, p.keep); saveChoices(); render(); };
+      th.appendChild(d);
+    }
+    el._upd();
+    el.querySelector('[data-a=all]').onclick = () => { g.forEach(p => { p.keep = true; choices.set(p.id, true); }); saveChoices(); render(); };
+    el.querySelector('[data-a=best]').onclick = () => { const b = g.reduce((a, c) => score(c) > score(a) ? c : a); g.forEach(p => { p.keep = p === b; choices.delete(p.id); }); saveChoices(); render(); };
+    box.appendChild(el);
+  }
+  const pg = $('pager'); pg.innerHTML = '';
+  if (pages > 1) {
+    const prev = document.createElement('button'); prev.textContent = '‹ Indietro'; prev.disabled = page === 0; prev.onclick = () => { page--; render(); scrollTo(0, 0); };
+    const next = document.createElement('button'); next.textContent = 'Avanti ›'; next.disabled = page >= pages - 1; next.onclick = () => { page++; render(); scrollTo(0, 0); };
+    const s = document.createElement('span'); s.className = 'muted'; s.textContent = `Pagina ${page + 1} di ${pages}`;
+    pg.append(prev, s, next);
+  }
+}
+function setStatus(t) { $('status').textContent = t; }
+
+$('thr').oninput = () => { $('thrv').textContent = $('thr').value; };
+$('thr').onchange = () => photos.length && regroup();
+$('nearOnly').onchange = () => photos.length && regroup();
+$('thrv').textContent = $('thr').value;
+
+$('apply').onclick = async () => {
+  const drop = photos.filter(p => !p.keep);
+  if (!drop.length) return;
+  if (!G.isNative) { note('warn', 'Lo spostamento nel cestino funziona solo nell\'app installata sul telefono.'); return; }
+  const where = G.platform === 'ios' ? 'in "Eliminati di recente"' : 'nel cestino';
+  const lives = drop.filter(p => p.live).length;
+  if (!await ask(`Spostare ${drop.length} foto ${where}?${lives ? `\n${lives} sono Live Photo: anche il loro video viene spostato.` : ''}\nPotrai recuperarle per circa 30 giorni.`, 'Sposta')) return;
+  $('apply').disabled = true;
+  setStatus('Il telefono chiede conferma…');
+  try {
+    const ok = await G.trash(drop);
+    if (!ok) { note('warn', 'Operazione annullata: nessuna foto spostata.'); render(); return; }
+    const gone = new Set(drop);
+    drop.forEach(p => { p.thumb && URL.revokeObjectURL(p.thumb); choices.delete(p.id); });
+    saveChoices();
+    photos = photos.filter(p => !gone.has(p));
+    note('done', `Spostate <b>${drop.length}</b> foto ${where}. Se cambi idea le trovi lì per circa 30 giorni.`);
+    restoreNote(note);
+    regroup();
+  } catch (e) { note('warn', 'Non sono riuscita a spostare le foto: ' + esc(e.message)); render(); }
+};
 })();
 
 // ======================= PERSONE E ANIMALI =======================
 (() => {
 const $ = id => document.getElementById('c-' + id);
+const note = makeNote('c-');
 const KNOWN_KEY = 'persone-riconosciute-v1';
 let human, ready = false, stopFlag = false, busy = false;
-let photos = [];   // {..item, pet, petEx, petThumb}
-let faces = [];    // {photo, emb, thumb, excluded}
+let photos = [];   // {..item, pet, petEx, petThumb, W, H}
+let faces = [];    // {key, photo, emb, box, thumb, excluded}
 let clusters = []; // {faces, name, cent}
-let known = [];    // {name, emb}
+let known = [];    // {name, protos:[Float32Array]}
 let showAll = new Set();
 let petsChoice = { on: true, name: 'Gatti' };
+// scelte salvate: nomi per volto, volti esclusi, "No" ai suggerimenti, foto animali escluse
+let faceName = new Map(), excluded = new Set(), rejects = new Map(), petExcluded = new Set();
 
 const config = {
   modelBasePath: new URL('models/', location.href).href, backend: 'webgl', debug: false, cacheModels: false, warmup: 'none', async: true,
@@ -289,8 +384,27 @@ const config = {
   object: { enabled: true, modelPath: 'nanodet.json', minConfidence: 0.2, maxDetected: 10, skipFrames: 0, skipTime: 0 },
 };
 
+async function loadState() {
+  try {
+    const s = await Store.get('clsState');
+    if (s) {
+      faceName = new Map(s.faceName || []); excluded = new Set(s.excluded || []);
+      rejects = new Map((s.rejects || []).map(([k, v]) => [k, new Set(v)])); petExcluded = new Set(s.petExcluded || []);
+      if (s.petsChoice) petsChoice = s.petsChoice;
+    }
+  } catch (e) {}
+}
+let saveT = null;
+function saveState() {
+  clearTimeout(saveT);
+  saveT = setTimeout(() => Store.set('clsState', {
+    faceName: [...faceName], excluded: [...excluded], rejects: [...rejects].map(([k, v]) => [k, [...v]]), petExcluded: [...petExcluded], petsChoice,
+  }).catch(() => {}), 300);
+}
+
 window.__initCls = async () => {
-  loadKnown();
+  loadKnown(); await loadState();
+  $('noFaceData').checked = noFaceData();
   try {
     human = new Human.Human(config);
     await human.load();
@@ -299,6 +413,11 @@ window.__initCls = async () => {
     console.error(e); setStatus('Errore nel caricamento dei modelli: ' + e.message);
     note('warn', 'Non riesco ad avviare il riconoscimento su questo telefono.');
   }
+};
+
+$('noFaceData').onchange = async () => {
+  localStorage.setItem('no-dati-volti', $('noFaceData').checked ? '1' : '0');
+  if ($('noFaceData').checked) await Store.clear('cls').catch(() => {});
 };
 
 $('pick').onclick = async () => {
@@ -319,46 +438,77 @@ async function analyse(list) {
   $('pick').disabled = true; $('stop').disabled = false; $('work').style.display = ''; $('actions').hidden = false;
   await G.clearCache(); G.keepAwake(true);
   updateButtons();
+  const saved = noFaceData() ? new Map() : await Store.getMany('cls', list.map(it => it.key)).catch(() => new Map());
+  const pending = [];
+  const flush = () => { const e = pending.splice(0); if (!noFaceData()) Store.putMany('cls', e).catch(() => {}); };
   const t0 = performance.now();
-  let failed = 0;
+  const toDo = list.filter(it => !saved.has(it.key)).length;
+  let failed = 0, reused = 0, fresh = 0;
   for (let i = 0; i < list.length && !stopFlag; i++) {
     const it = list[i];
-    try { await analyseOne(it); } catch (e) { failed++; console.warn('Salto', it.name, e); }
-    const el = (performance.now() - t0) / 1000, rem = el / (i + 1) * (list.length - i - 1);
+    const d = saved.get(it.key);
+    if (d) { addPhoto(it, d, null); reused++; }
+    else {
+      try { const r = await analyseOne(it); addPhoto(it, r.data, r.thumbs); pending.push([it.key, r.data]); }
+      catch (e) { failed++; console.warn('Salto', it.name, e); }
+      fresh++;
+      if (pending.length >= 10) flush();
+    }
+    if (d && i % 50 !== 0 && i !== list.length - 1) continue;
+    const el = (performance.now() - t0) / 1000, rem = fresh ? el / fresh * (toDo - fresh) : 0;
     $('prog').style.width = (100 * (i + 1) / list.length) + '%';
-    setStatus(`Analizzo ${i + 1} / ${list.length} · ${faces.length} volti · mancano circa ${fmtT(rem)}`);
-    if ((i + 1) % 25 === 0) { cluster(); renderAll(); }
+    setStatus(`Analizzo ${i + 1} / ${list.length} · ${faces.length} volti` + (rem > 0 ? ` · mancano circa ${fmtT(rem)}` : ''));
+    if ((!d && fresh % 25 === 0) || (d && i % 50 === 0)) { cluster(); renderAll(); await new Promise(r => setTimeout(r, 0)); }
   }
+  flush();
   G.keepAwake(false); busy = false;
   $('pick').disabled = false; $('stop').disabled = true;
+  $('prog').style.width = '100%';
   setStatus(`Fatto: ${photos.length} foto · ${faces.length} volti · ${photos.filter(p => p.pet).length} con animali`);
-  if (stopFlag) note('warn', `Analisi interrotta: considerate ${photos.length} foto su ${list.length}.`);
+  if (reused) note('done', `${reused} foto erano già state analizzate e sono state riprese dal salvataggio.`);
+  if (stopFlag) note('warn', `Analisi interrotta: considerate ${photos.length} foto su ${list.length}. La prossima volta riparte da qui.`);
   if (failed) note('warn', `${failed} foto non sono state lette e sono state saltate.`);
   cluster(); renderAll();
 }
 
+// Aggiunge una foto analizzata (nuova o ripresa dal salvataggio)
+function addPhoto(it, d, thumbs) {
+  const ph = { ...it, pet: d.pet, petEx: petExcluded.has(it.key), petThumb: thumbs ? thumbs.pet : null, W: d.W, H: d.H };
+  d.faces.forEach((f, i) => {
+    const key = it.key + '#' + i;
+    faces.push({ key, photo: ph, emb: norm(Float32Array.from(f.emb)), box: f.box, thumb: thumbs ? thumbs.faces[i] : null, excluded: excluded.has(key) });
+  });
+  photos.push(ph);
+}
+
 async function analyseOne(it) {
-  const bmp = await createImageBitmap(await it.load(1280));
-  const s = Math.min(1, 1280 / Math.max(bmp.width, bmp.height));
-  const w = Math.round(bmp.width * s), h = Math.round(bmp.height * s);
-  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
-  const cx = cv.getContext('2d'); cx.drawImage(bmp, 0, 0, w, h); bmp.close();
+  const cv = await photoCanvas(it);
+  const w = cv.width, h = cv.height;
   const res = await human.detect(cv);
-  const ph = { ...it, pet: false, petEx: false, petThumb: null };
   const objs = res.object || [];
   const petBoxes = objs.filter(o => (o.label === 'cat' || o.label === 'dog') && o.score >= 0.3).map(o => o.box);
   const personBoxes = objs.filter(o => o.label === 'person' && o.score >= 0.3).map(o => o.box);
   const inside = (b, x, y) => x >= b[0] && x <= b[0] + b[2] && y >= b[1] && y <= b[1] + b[3];
-  if (petBoxes.length) { ph.pet = true; ph.petThumb = await crop(cv, [0, 0, w, h], 220, 0); }
+  const data = { W: w, H: h, pet: petBoxes.length > 0, faces: [] }, thumbs = { pet: null, faces: [] };
+  if (data.pet) thumbs.pet = await crop(cv, [0, 0, w, h], 220, 0);
   for (const f of res.face || []) {
     const [bx, by, bw, bh] = f.box;
     const fx = bx + bw / 2, fy = by + bh / 2;
     if (petBoxes.some(b => inside(b, fx, fy)) && !personBoxes.some(b => inside(b, fx, fy))) continue; // muso di animale
     if (!f.embedding || f.embedding.length < 10) continue;
     if (bw < 48 || bh < 48 || (f.faceScore ?? f.score) < 0.6) continue;
-    faces.push({ photo: ph, emb: norm(Float32Array.from(f.embedding)), thumb: await crop(cv, f.box, 120, 0.25), excluded: false });
+    data.faces.push({ emb: Array.from(f.embedding, v => +v.toFixed(5)), box: f.box.map(v => Math.round(v)) });
+    thumbs.faces.push(await crop(cv, f.box, 120, 0.25));
   }
-  photos.push(ph);
+  return { data, thumbs };
+}
+async function photoCanvas(it) {
+  const bmp = await createImageBitmap(await it.load(1280));
+  const s = Math.min(1, 1280 / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * s), h = Math.round(bmp.height * s);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  cv.getContext('2d').drawImage(bmp, 0, 0, w, h); bmp.close();
+  return cv;
 }
 async function crop(cv, box, size, pad) {
   let [x, y, w, h] = box; const p = Math.max(w, h) * pad, side = Math.max(w, h) + 2 * p;
@@ -369,13 +519,48 @@ async function crop(cv, box, size, pad) {
   else g.drawImage(cv, x, y, side, side, 0, 0, size, size);
   return URL.createObjectURL(await c.convertToBlob({ type: 'image/jpeg', quality: .8 }));
 }
+// Miniature dei volti ripresi dal salvataggio: si ritagliano solo quando vanno mostrate
+const canvasMemo = new Map();
+function memoCanvas(ph) {
+  if (!canvasMemo.has(ph.key)) {
+    if (canvasMemo.size > 12) canvasMemo.delete(canvasMemo.keys().next().value);
+    canvasMemo.set(ph.key, photoCanvas(ph).then(cv => {
+      if (ph.W && cv.width !== ph.W) { const c2 = document.createElement('canvas'); c2.width = ph.W; c2.height = ph.H; c2.getContext('2d').drawImage(cv, 0, 0, ph.W, ph.H); return c2; }
+      return cv;
+    }));
+  }
+  return canvasMemo.get(ph.key);
+}
+function setFaceThumb(img, f) {
+  if (f.thumb) { img.src = f.thumb; return; }
+  if (!f._p) f._p = memoCanvas(f.photo).then(cv => crop(cv, f.box, 120, 0.25)).then(u => (f.thumb = u)).catch(() => (f._p = null, ''));
+  f._p.then(u => { if (u) img.src = u; });
+}
+function setPetThumb(img, p) {
+  if (p.petThumb) { img.src = p.petThumb; return; }
+  if (!p._pp) p._pp = memoCanvas(p).then(cv => crop(cv, [0, 0, cv.width, cv.height], 220, 0)).then(u => (p.petThumb = u)).catch(() => (p._pp = null, ''));
+  p._pp.then(u => { if (u) img.src = u; });
+}
+
 function norm(v) { let s = 0; for (const x of v) s += x * x; s = Math.sqrt(s) || 1; for (let i = 0; i < v.length; i++) v[i] /= s; return v; }
 function cos(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+const maxCos = (v, protos) => protos.reduce((m, p) => Math.max(m, cos(v, p)), -1);
+// "Volti tipo": il volto medio più i volti più diversi (es. la stessa persona a età diverse)
+function prototypes(embs, maxK = 6, thr = 0.82) {
+  if (!embs.length) return [];
+  const mean = new Float32Array(embs[0].length); embs.forEach(e => e.forEach((v, i) => mean[i] += v));
+  const protos = [norm(mean)];
+  while (protos.length < maxK) {
+    let worst = null, ws = 2;
+    for (const e of embs) { const s = maxCos(e, protos); if (s < ws) { ws = s; worst = e; } }
+    if (!worst || ws >= thr) break;
+    protos.push(Float32Array.from(worst));
+  }
+  return protos;
+}
 
 function cluster() {
   const T = +$('thr').value / 100;
-  const oldNames = new Map();
-  for (const c of clusters) if (c.name) for (const f of c.faces) oldNames.set(f, c.name);
   const cl = [];
   for (const f of faces) {
     if (f.excluded) continue;
@@ -385,14 +570,25 @@ function cluster() {
     else cl.push({ faces: [f], sum: Float32Array.from(f.emb), cent: Float32Array.from(f.emb), name: '' });
   }
   for (const c of cl) {
-    const votes = {}; for (const f of c.faces) { const n = oldNames.get(f); if (n) votes[n] = (votes[n] || 0) + 1; }
+    const votes = {}; for (const f of c.faces) { const n = faceName.get(f.key); if (n) votes[n] = (votes[n] || 0) + 1; }
     const top = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
     if (top) c.name = top[0];
-    else { let bn = '', bs = -1; for (const k of known) { const s = cos(c.cent, k.emb); if (s > bs) { bs = s; bn = k.name; } } if (bs >= T) c.name = bn; }
+    else {
+      let bn = '', bs = -1;
+      for (const k of known) { if (isRejected(c, k.name)) continue; const s = maxCos(c.cent, k.protos); if (s > bs) { bs = s; bn = k.name; } }
+      if (bs >= T) c.name = bn;
+    }
   }
   cl.sort((a, b) => (!!b.name - !!a.name) || b.faces.length - a.faces.length);
   clusters = cl;
 }
+const isRejected = (c, name) => c.faces.some(f => rejects.has(f.key) && rejects.get(f.key).has(name));
+function setClusterName(c, name) {
+  c.name = name;
+  for (const f of c.faces) { if (name) faceName.set(f.key, name); else faceName.delete(f.key); }
+  saveState();
+}
+
 $('thr').oninput = () => $('thrv').textContent = $('thr').value;
 $('thr').onchange = () => { cluster(); renderAll(); };
 $('thrv').textContent = $('thr').value;
@@ -401,12 +597,48 @@ $('showSingles').onchange = () => renderAll();
 $('tPeople').onclick = () => tab(true); $('tPets').onclick = () => tab(false);
 function tab(p) { $('tPeople').classList.toggle('on', p); $('tPets').classList.toggle('on', !p); $('people').style.display = p ? '' : 'none'; $('pets').style.display = p ? 'none' : ''; }
 
+// ---------- Suggerimenti "È Vincenzo?" ----------
+function suggestions() {
+  const T = +$('thr').value / 100;
+  const byName = new Map();
+  for (const c of clusters) if (c.name) { if (!byName.has(c.name)) byName.set(c.name, []); byName.get(c.name).push(...c.faces.filter(f => !f.excluded).map(f => f.emb)); }
+  for (const k of known) if (!byName.has(k.name)) byName.set(k.name, k.protos);
+  const protosOf = new Map([...byName].map(([n, e]) => [n, prototypes(e)]));
+  const out = [];
+  for (const c of clusters) {
+    if (c.name) continue;
+    let bn = '', bs = -1;
+    for (const [n, pr] of protosOf) { if (isRejected(c, n)) continue; const s = maxCos(c.cent, pr); if (s > bs) { bs = s; bn = n; } }
+    if (bn && bs >= T - 0.12) out.push({ c, name: bn, score: bs });
+  }
+  return out.sort((a, b) => b.score - a.score);
+}
+function renderSuggestions(box) {
+  const list = suggestions();
+  if (!list.length) return;
+  const wrap = document.createElement('div'); wrap.className = 'box sugg';
+  wrap.innerHTML = `<b>Potrebbero essere persone a cui hai già dato un nome</b> <span class="muted">(${list.length})</span>`;
+  for (const s of list.slice(0, 4)) {
+    const el = document.createElement('div'); el.className = 'sg';
+    el.innerHTML = `<div class="faces"></div><div class="sgq">È <b>${esc(s.name)}</b>?<span class="muted"> ${s.c.faces.length} ${s.c.faces.length === 1 ? 'volto' : 'volti'}</span></div>
+      <div class="sgb"><button class="go">Sì</button><button>No</button></div>`;
+    const fb = el.querySelector('.faces');
+    for (const f of s.c.faces.slice(0, 5)) { const d = document.createElement('div'); d.className = 'face'; d.innerHTML = '<img alt="">'; setFaceThumb(d.querySelector('img'), f); onTap(d, () => zoom(f.photo), () => zoom(f.photo)); fb.appendChild(d); }
+    const [yes, no] = el.querySelectorAll('.sgb button');
+    yes.onclick = () => { setClusterName(s.c, s.name); cluster(); renderAll(); };
+    no.onclick = () => { for (const f of s.c.faces) { if (!rejects.has(f.key)) rejects.set(f.key, new Set()); rejects.get(f.key).add(s.name); } saveState(); renderAll(); };
+    wrap.appendChild(el);
+  }
+  box.appendChild(wrap);
+}
+
 function renderAll() { renderPeople(); renderPets(); updateButtons(); }
 function renderPeople() {
   const box = $('people'); box.innerHTML = '';
   const singles = $('showSingles').checked;
   const vis = clusters.filter(c => singles || c.faces.length > 1 || c.name);
   if (!vis.length) { box.innerHTML = '<div class="box">Nessun volto ricorrente trovato (per ora).</div>'; return; }
+  renderSuggestions(box);
   const hint = document.createElement('p'); hint.className = 'muted';
   hint.textContent = 'Tocca un volto = escludilo (non è quella persona). Tieni premuto = vedi la foto. Stesso nome su più gruppi = un solo album.';
   box.appendChild(hint);
@@ -415,14 +647,15 @@ function renderPeople() {
     const nPhotos = new Set(c.faces.map(f => f.photo)).size;
     el.innerHTML = `<div class="clh"><input type="text" placeholder="Chi è? (scrivi un nome)" list="c-namesList" enterkeyhint="done"><span class="muted">${nPhotos} foto</span></div><div class="faces"></div>`;
     const inp = el.querySelector('input'); inp.value = c.name;
-    inp.onchange = () => { c.name = inp.value.trim(); el.classList.toggle('named', !!c.name); updateNamesList(); updateButtons(); };
+    inp.onchange = () => { setClusterName(c, inp.value.trim()); el.classList.toggle('named', !!c.name); updateNamesList(); updateButtons(); if (c.name) { cluster(); renderAll(); } };
     inp.onkeydown = e => { if (e.key === 'Enter') inp.blur(); };
     const fb = el.querySelector('.faces');
     const lim = showAll.has(c) ? c.faces.length : 11;
     for (const f of c.faces.slice(0, lim)) {
       const d = document.createElement('div'); d.className = 'face' + (f.excluded ? ' ex' : '');
-      d.innerHTML = `<img src="${f.thumb}" alt="">`;
-      onTap(d, () => { f.excluded = !f.excluded; d.classList.toggle('ex', f.excluded); updateButtons(); }, () => zoom(f.photo));
+      d.innerHTML = '<img alt="">';
+      setFaceThumb(d.querySelector('img'), f);
+      onTap(d, () => { f.excluded = !f.excluded; if (f.excluded) excluded.add(f.key); else excluded.delete(f.key); saveState(); d.classList.toggle('ex', f.excluded); updateButtons(); }, () => zoom(f.photo));
       fb.appendChild(d);
     }
     if (c.faces.length > lim) { const m = document.createElement('div'); m.className = 'more'; m.textContent = `+${c.faces.length - lim}`; m.onclick = () => { showAll.add(c); renderPeople(); }; fb.appendChild(m); }
@@ -445,14 +678,15 @@ function renderPets() {
     <span class="muted">${list.filter(p => !p.petEx).length} foto con animali</span></div>
     <p class="muted">Tocca una foto per escluderla (non c'è un animale). Tieni premuto per vederla grande.</p><div class="faces big"></div>`;
   const [cb, nm] = el.querySelectorAll('input');
-  cb.onchange = () => { petsChoice.on = cb.checked; updateButtons(); };
-  nm.onchange = () => { petsChoice.name = nm.value.trim() || 'Gatti'; updateButtons(); };
+  cb.onchange = () => { petsChoice.on = cb.checked; saveState(); updateButtons(); };
+  nm.onchange = () => { petsChoice.name = nm.value.trim() || 'Gatti'; saveState(); updateButtons(); };
   const pb = el.querySelector('.faces');
   const lim = showAll.has('pets') ? list.length : 60;
   for (const p of list.slice(0, lim)) {
     const d = document.createElement('div'); d.className = 'face' + (p.petEx ? ' ex' : '');
-    d.innerHTML = `<img src="${p.petThumb}" alt="">`;
-    onTap(d, () => { p.petEx = !p.petEx; d.classList.toggle('ex', p.petEx); updateButtons(); }, () => zoom(p));
+    d.innerHTML = '<img alt="">';
+    setPetThumb(d.querySelector('img'), p);
+    onTap(d, () => { p.petEx = !p.petEx; if (p.petEx) petExcluded.add(p.key); else petExcluded.delete(p.key); saveState(); d.classList.toggle('ex', p.petEx); updateButtons(); }, () => zoom(p));
     pb.appendChild(d);
   }
   if (list.length > lim) { const m = document.createElement('div'); m.className = 'more'; m.textContent = `+${list.length - lim}`; m.onclick = () => { showAll.add('pets'); renderPets(); }; pb.appendChild(m); }
@@ -488,10 +722,12 @@ $('make').onclick = async () => {
 };
 const safe = s => s.replace(/[\\/:*?"<>|]/g, '_').trim() || 'Senza nome';
 
-// Persone ricordate (restano solo su questo telefono)
+// Persone ricordate (restano solo su questo telefono), con più "volti tipo" per persona
 function loadKnown() {
-  try { const d = JSON.parse(localStorage.getItem(KNOWN_KEY) || 'null'); known = d ? d.map(p => ({ name: p.name, emb: norm(Float32Array.from(p.emb)) })) : []; }
-  catch (e) { known = []; }
+  try {
+    const d = JSON.parse(localStorage.getItem(KNOWN_KEY) || 'null');
+    known = d ? d.map(p => ({ name: p.name, protos: (p.embs || [p.emb]).map(e => norm(Float32Array.from(e))) })) : [];
+  } catch (e) { known = []; }
   showKnown();
 }
 function showKnown() {
@@ -501,8 +737,8 @@ function showKnown() {
 $('saveNames').onclick = () => {
   const by = new Map();
   for (const c of clusters) if (c.name) for (const f of c.faces) if (!f.excluded) { if (!by.has(c.name)) by.set(c.name, []); by.get(c.name).push(f.emb); }
-  for (const k of known) if (!by.has(k.name)) by.set(k.name, [k.emb]);
-  const out = [...by].map(([name, embs]) => { const s = new Float32Array(embs[0].length); embs.forEach(e => e.forEach((v, i) => s[i] += v)); return { name, emb: Array.from(norm(s), v => +v.toFixed(5)) }; });
+  for (const k of known) { if (!by.has(k.name)) by.set(k.name, []); by.get(k.name).push(...k.protos); }
+  const out = [...by].map(([name, embs]) => ({ name, embs: prototypes(embs).map(p => Array.from(p, v => +v.toFixed(5))) }));
   localStorage.setItem(KNOWN_KEY, JSON.stringify(out));
   loadKnown();
   note('done', `Ricordate ${known.length} persone. La prossima volta verranno riconosciute da sole.`);
@@ -513,15 +749,137 @@ $('forget').onclick = async () => {
 };
 
 function setStatus(t) { $('status').textContent = t; }
-function note(cls, html) { const d = document.createElement('div'); d.className = cls; d.innerHTML = html; $('msg').appendChild(d); }
+})();
+
+// ======================= COSA OCCUPA PIÙ SPAZIO =======================
+(() => {
+const $ = id => document.getElementById('p-' + id);
+const note = makeNote('p-');
+let photos = [], videos = [], cats = [], sel = new Set();
+const CATS = [
+  { id: 'video', title: 'Video', icon: '🎬', desc: 'Dal più pesante. Spesso sono loro a riempire la memoria.' },
+  { id: 'shot', title: 'Screenshot', icon: '📱', desc: 'Catture dello schermo.' },
+  { id: 'app', title: 'WhatsApp e altre app', icon: '💬', desc: 'Immagini arrivate da app di messaggi.' },
+  { id: 'blur', title: 'Sfocate', icon: '🌫️', desc: 'Foto molto poco nitide.' },
+  { id: 'dark', title: 'Buie', icon: '🌑', desc: 'Foto quasi nere (tasca, scatti per sbaglio).' },
+  { id: 'dup', title: 'Doppioni identici', icon: '👯', desc: 'Stessa foto salvata più volte: la prima resta, le copie sono già selezionate.' },
+];
+const weight = p => (p.size || 0) + (p.liveSize || 0);
+
+$('pick').onclick = async () => {
+  $('msg').innerHTML = '';
+  let res, vids = [];
+  try { res = await G.choose(+$('range').value, $('file')); vids = await G.videos(+$('range').value); }
+  catch (e) { if (e.message === 'permesso') permissionNote(note); else note('warn', 'Errore: ' + esc(e.message)); return; }
+  if (!res.items.length && !vids.length) { $('status').textContent = 'Nessuna foto in questo periodo.'; return; }
+  if (res.limited) limitedNote(note);
+  $('intro').style.display = 'none'; $('pick').disabled = true;
+  await G.clearCache(); G.keepAwake(true);
+  const r = await Analyzer.run(res.items, (done, tot, reused) => { $('prog').style.width = (100 * done / tot) + '%'; $('status').textContent = `Analizzo ${done} / ${tot}` + (reused ? ` (${reused} già analizzate)` : ''); });
+  photos = r.photos; videos = vids;
+  $('status').textContent = 'Calcolo il peso dei file…';
+  await G.fillSizes(photos); await G.fillSizes(videos);
+  G.keepAwake(false); $('pick').disabled = false;
+  build(); showCats();
+};
+
+function build() {
+  const real = photos.filter(p => !p.screenshot);
+  const dupSet = [], seen = new Map();
+  for (const p of photos) {
+    const k = p.hash[0] + ':' + p.hash[1] + ':' + p.w + 'x' + p.h;
+    const first = seen.get(k);
+    if (first && histSim(first, p) > 0.97) dupSet.push(p); else if (!first) seen.set(k, p);
+  }
+  const lists = {
+    video: videos.slice().sort((a, b) => weight(b) - weight(a)),
+    shot: photos.filter(p => p.screenshot),
+    app: photos.filter(p => p.app),
+    blur: real.filter(p => p.sharp < 12 && p.lum >= 35),
+    dark: real.filter(p => p.lum < 35),
+    dup: dupSet,
+  };
+  cats = CATS.map(c => ({ ...c, items: lists[c.id] }));
+  const tot = photos.reduce((s, p) => s + weight(p), 0) + videos.reduce((s, v) => s + weight(v), 0);
+  $('status').textContent = `${photos.length} foto · ${videos.length} video${tot ? ' · ' + fmtB(tot) : ''}`;
+}
+
+function showCats() {
+  sel.clear(); $('actions').hidden = true;
+  const box = $('list'); box.innerHTML = '';
+  for (const c of cats) {
+    const sz = c.items.reduce((s, p) => s + weight(p), 0);
+    const el = document.createElement('button'); el.className = 'cat';
+    el.disabled = !c.items.length;
+    el.innerHTML = `<span class="ci">${c.icon}</span><span class="ct"><b>${c.title}</b><span class="muted">${c.desc}</span></span><span class="cn"><b>${c.items.length}</b><span class="muted">${fmtB(sz)}</span></span>`;
+    el.onclick = () => openCat(c);
+    box.appendChild(el);
+  }
+  if (!G.isNative) box.insertAdjacentHTML('beforeend', '<p class="muted">Nel browser i video non sono disponibili: si vedono solo nell\'app sul telefono.</p>');
+}
+
+function openCat(c) {
+  sel.clear();
+  if (c.id === 'dup') c.items.forEach(p => sel.add(p));
+  const box = $('list'); box.innerHTML = '';
+  const head = document.createElement('div'); head.className = 'cathead';
+  head.innerHTML = `<button class="back">‹ Categorie</button><b>${c.icon} ${c.title}</b><span style="flex:1"></span><button data-a="all">Tutte</button><button data-a="none">Nessuna</button>`;
+  head.querySelector('.back').onclick = showCats;
+  box.appendChild(head);
+  box.insertAdjacentHTML('beforeend', `<p class="muted">${c.desc} Tocca per selezionare cosa togliere, 🔍 per vedere grande.</p>`);
+  const grid = document.createElement('div'); grid.className = 'thumbs pick';
+  const lim = Math.min(c.items.length, 300);
+  const shown = c.items.slice(0, lim);
+  head.querySelector('[data-a=all]').onclick = () => { shown.forEach(p => sel.add(p)); grid.querySelectorAll('.ph').forEach(d => d.classList.add('sel')); upd(); };
+  head.querySelector('[data-a=none]').onclick = () => { sel.clear(); grid.querySelectorAll('.ph').forEach(d => d.classList.remove('sel')); upd(); };
+  for (const p of shown) {
+    const d = document.createElement('div'); d.className = 'ph' + (sel.has(p) ? ' sel' : '');
+    d.innerHTML = `<img alt=""><span class="chk">✓</span><button class="zoom" aria-label="Vedi grande">🔍</button>
+      ${p.kind === 'video' ? `<span class="live">▶ ${fmtDur(p.duration)}</span>` : p.live ? '<span class="live">LIVE</span>' : ''}
+      <div class="meta">${fmtB(weight(p)) || ''}${p.date ? ' · ' + new Date(p.date).toLocaleDateString('it-IT') : ''}</div>`;
+    setThumb(d.querySelector('img'), p);
+    d.onclick = e => { if (e.target.classList.contains('zoom')) { zoom(p); return; } if (sel.has(p)) sel.delete(p); else sel.add(p); d.classList.toggle('sel'); upd(); };
+    grid.appendChild(d);
+  }
+  box.appendChild(grid);
+  if (c.items.length > lim) box.insertAdjacentHTML('beforeend', `<p class="muted">Mostro le prime ${lim} di ${c.items.length}. Dopo averle sistemate, rifai l'analisi per vedere le altre.</p>`);
+  $('actions').hidden = false; upd();
+  scrollTo(0, 0);
+}
+function upd() {
+  const sz = [...sel].reduce((s, p) => s + weight(p), 0);
+  $('apply').disabled = !sel.size;
+  $('apply').textContent = sel.size ? `Sposta ${sel.size} nel cestino${sz ? ' (' + fmtB(sz) + ')' : ''}` : 'Seleziona cosa togliere';
+}
+
+$('apply').onclick = async () => {
+  const drop = [...sel];
+  if (!drop.length) return;
+  if (!G.isNative) { note('warn', 'Lo spostamento nel cestino funziona solo nell\'app installata sul telefono.'); return; }
+  const where = G.platform === 'ios' ? 'in "Eliminati di recente"' : 'nel cestino';
+  if (!await ask(`Spostare ${drop.length} elementi ${where}?\nPotrai recuperarli per circa 30 giorni.`, 'Sposta')) return;
+  try {
+    const ok = await G.trash(drop);
+    if (!ok) { note('warn', 'Operazione annullata.'); return; }
+    const gone = new Set(drop);
+    const freed = drop.reduce((s, p) => s + weight(p), 0);
+    photos = photos.filter(p => !gone.has(p)); videos = videos.filter(v => !gone.has(v));
+    note('done', `Spostati <b>${drop.length}</b> elementi ${where}${freed ? ' · liberati circa ' + fmtB(freed) : ''}.`);
+    restoreNote(note);
+    build(); showCats();
+  } catch (e) { note('warn', 'Non sono riuscita a spostarli: ' + esc(e.message)); }
+};
 })();
 
 // ======================= Schede =======================
 (() => {
-  const sim = document.getElementById('mod-sim'), cls = document.getElementById('mod-cls');
-  const bS = document.getElementById('navSim'), bC = document.getElementById('navCls');
+  const mods = { navSim: 'mod-sim', navCls: 'mod-cls', navSpace: 'mod-space' };
   let started = false;
-  bS.onclick = () => { sim.style.display = ''; cls.style.display = 'none'; bS.classList.add('on'); bC.classList.remove('on'); scrollTo(0, 0); };
-  bC.onclick = () => { sim.style.display = 'none'; cls.style.display = ''; bC.classList.add('on'); bS.classList.remove('on'); scrollTo(0, 0);
-    if (!started) { started = true; setTimeout(() => window.__initCls(), 30); } };
+  for (const [btn, mod] of Object.entries(mods)) {
+    document.getElementById(btn).onclick = () => {
+      for (const [b, m] of Object.entries(mods)) { document.getElementById(m).style.display = m === mod ? '' : 'none'; document.getElementById(b).classList.toggle('on', b === btn); }
+      scrollTo(0, 0);
+      if (btn === 'navCls' && !started) { started = true; setTimeout(() => window.__initCls(), 30); }
+    };
+  }
 })();

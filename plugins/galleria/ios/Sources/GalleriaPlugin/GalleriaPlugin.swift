@@ -16,7 +16,10 @@ public class GalleriaPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "clearCache", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "trash", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "addToAlbum", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "keepAwake", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "keepAwake", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "listVideos", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getSizes", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "restore", returnType: CAPPluginReturnPromise)
     ]
 
     private var cacheDir: URL {
@@ -46,6 +49,15 @@ public class GalleriaPlugin: CAPPlugin, CAPBridgedPlugin {
             if fromMs > 0 {
                 opts.predicate = NSPredicate(format: "creationDate >= %@", Date(timeIntervalSince1970: fromMs / 1000) as NSDate)
             }
+            // foto arrivate da app di messaggi (album con quel nome)
+            var appOf: [String: String] = [:]
+            let albums = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+            albums.enumerateObjects { col, _, _ in
+                guard let t = col.localizedTitle?.lowercased() else { return }
+                let app = t.contains("whatsapp") ? "WhatsApp" : t.contains("telegram") ? "Telegram" : t.contains("messenger") ? "Messenger" : t.contains("instagram") ? "Instagram" : ""
+                if app.isEmpty { return }
+                PHAsset.fetchAssets(in: col, options: nil).enumerateObjects { a, _, _ in appOf[a.localIdentifier] = app }
+            }
             let res = PHAsset.fetchAssets(with: .image, options: opts)
             var out: [[String: Any]] = []
             out.reserveCapacity(res.count)
@@ -53,12 +65,71 @@ public class GalleriaPlugin: CAPPlugin, CAPBridgedPlugin {
                 out.append([
                     "id": a.localIdentifier,
                     "date": (a.creationDate?.timeIntervalSince1970 ?? 0) * 1000,
+                    "mod": (a.modificationDate?.timeIntervalSince1970 ?? 0),
                     "width": a.pixelWidth,
-                    "height": a.pixelHeight
+                    "height": a.pixelHeight,
+                    "screenshot": a.mediaSubtypes.contains(.photoScreenshot),
+                    "live": a.mediaSubtypes.contains(.photoLive),
+                    "app": appOf[a.localIdentifier] ?? ""
                 ])
             }
             call.resolve(["photos": out])
         }
+    }
+
+    @objc func listVideos(_ call: CAPPluginCall) {
+        let fromMs = call.getDouble("fromMs") ?? 0
+        DispatchQueue.global(qos: .userInitiated).async {
+            let opts = PHFetchOptions()
+            opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+            if fromMs > 0 {
+                opts.predicate = NSPredicate(format: "creationDate >= %@", Date(timeIntervalSince1970: fromMs / 1000) as NSDate)
+            }
+            let res = PHAsset.fetchAssets(with: .video, options: opts)
+            var out: [[String: Any]] = []
+            res.enumerateObjects { a, _, _ in
+                out.append([
+                    "id": a.localIdentifier,
+                    "date": (a.creationDate?.timeIntervalSince1970 ?? 0) * 1000,
+                    "mod": (a.modificationDate?.timeIntervalSince1970 ?? 0),
+                    "duration": a.duration,
+                    "width": a.pixelWidth,
+                    "height": a.pixelHeight,
+                    "size": self.fileSize(a).main
+                ])
+            }
+            call.resolve(["videos": out])
+        }
+    }
+
+    /// Peso del file principale e dell'eventuale video della Live Photo.
+    private func fileSize(_ a: PHAsset) -> (main: Int, live: Int) {
+        var main = 0, live = 0
+        for r in PHAssetResource.assetResources(for: a) {
+            let sz = (r.value(forKey: "fileSize") as? NSNumber)?.intValue ?? 0
+            switch r.type {
+            case .photo, .video: main = max(main, sz)
+            case .pairedVideo: live = max(live, sz)
+            default: break
+            }
+        }
+        return (main, live)
+    }
+
+    @objc func getSizes(_ call: CAPPluginCall) {
+        let ids = call.getArray("ids", String.self) ?? []
+        DispatchQueue.global(qos: .utility).async {
+            var out: [String: Any] = [:]
+            PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil).enumerateObjects { a, _, _ in
+                let s = self.fileSize(a)
+                out[a.localIdentifier] = ["size": s.main, "live": s.live]
+            }
+            call.resolve(["sizes": out])
+        }
+    }
+
+    @objc func restore(_ call: CAPPluginCall) {
+        call.reject("Su iPhone le foto si recuperano dall'album Eliminati di recente.")
     }
 
     private func asset(_ id: String) -> PHAsset? {
@@ -96,7 +167,7 @@ public class GalleriaPlugin: CAPPlugin, CAPBridgedPlugin {
         PHPhotoLibrary.shared().performChanges({
             PHAssetChangeRequest.deleteAssets(assets)
         }) { ok, err in
-            if ok { call.resolve(["deleted": true]); return }
+            if ok { call.resolve(["deleted": true, "ok": true]); return }
             if let e = err as NSError?, e.domain == PHPhotosErrorDomain, e.code == PHPhotosError.userCancelled.rawValue {
                 call.resolve(["deleted": false]); return
             }

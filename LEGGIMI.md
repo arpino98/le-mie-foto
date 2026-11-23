@@ -17,6 +17,16 @@
   - Su Android le foto vengono copiate in *Immagini/Classificate/Nome*, e le trovi come album nella Galleria o in Google Foto.
 - *Ricorda persone* memorizza i nomi sul telefono, così la volta dopo le riconosce da sola.
 
+**Cosa occupa più spazio**
+- Divide foto e video in categorie, ciascuna con numero e peso: video (dal più pesante), screenshot, WhatsApp e altre app, sfocate, buie, doppioni identici.
+- Apri una categoria, selezioni e sposti nel cestino.
+
+**In più**
+- L'analisi viene salvata sul telefono: se chiudi l'app, la volta dopo riparte da dove eri rimasta. Restano salvate anche le scelte (foto da tenere, nomi, volti esclusi). Puoi eliminarla con *Elimina analisi salvata*, oppure scegliere di non salvare i dati dei volti.
+- Dopo che hai dato un nome, l'app propone i gruppi che potrebbero essere la stessa persona ("È Vincenzo?"). Rispondi Sì o No, e i No non vengono riproposti. Ogni persona ricordata ha più "volti tipo", così viene riconosciuta meglio anche quando cambia negli anni.
+- Su iPhone le Live Photo hanno il badge LIVE con il peso del video, e il video va nel cestino insieme alla foto.
+- Su Android, dopo aver spostato foto nel cestino, puoi rimetterle al loro posto con un tocco.
+
 Tutto resta sul telefono. Niente viene caricato su internet, nemmeno i modelli di riconoscimento.
 
 ## Installarla su Android (gratis)

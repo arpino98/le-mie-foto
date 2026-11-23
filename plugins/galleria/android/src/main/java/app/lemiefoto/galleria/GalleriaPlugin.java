@@ -108,7 +108,9 @@ public class GalleriaPlugin extends Plugin {
                     MediaStore.Images.Media.WIDTH,
                     MediaStore.Images.Media.HEIGHT,
                     MediaStore.Images.Media.SIZE,
-                    MediaStore.Images.Media.ORIENTATION
+                    MediaStore.Images.Media.ORIENTATION,
+                    MediaStore.Images.Media.DATE_MODIFIED,
+                    MediaStore.Images.Media.RELATIVE_PATH
                 };
                 // Escludo le copie create dall'app (Immagini/Classificate), altrimenti risulterebbero "doppioni".
                 StringBuilder sel = new StringBuilder("(" + MediaStore.Images.Media.RELATIVE_PATH + " IS NULL OR " + MediaStore.Images.Media.RELATIVE_PATH + " NOT LIKE ?)");
@@ -134,6 +136,17 @@ public class GalleriaPlugin extends Plugin {
                             p.put("width", w);
                             p.put("height", h);
                             p.put("size", c.getLong(6));
+                            p.put("mod", c.getLong(8));
+                            String rel = c.isNull(9) ? "" : c.getString(9);
+                            String nm = c.getString(1) == null ? "" : c.getString(1);
+                            String relL = rel.toLowerCase(), nmL = nm.toLowerCase();
+                            p.put("screenshot", relL.contains("screenshot") || nmL.startsWith("screenshot"));
+                            String app = "";
+                            if (relL.contains("whatsapp") || nm.matches(".*-WA\\d{4}.*")) app = "WhatsApp";
+                            else if (relL.contains("telegram")) app = "Telegram";
+                            else if (relL.contains("messenger")) app = "Messenger";
+                            else if (relL.contains("instagram")) app = "Instagram";
+                            p.put("app", app);
                             out.put(p);
                         }
                     }
@@ -147,8 +160,56 @@ public class GalleriaPlugin extends Plugin {
         });
     }
 
+    private boolean isVideo(String id) {
+        return id.startsWith("v:");
+    }
+
     private Uri uriFor(String id) {
+        if (isVideo(id)) return ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, Long.parseLong(id.substring(2)));
         return ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, Long.parseLong(id));
+    }
+
+    // ---------- Elenco video ----------
+    @PluginMethod
+    public void listVideos(PluginCall call) {
+        final long fromMs = call.getLong("fromMs", 0L);
+        pool.execute(() -> {
+            try {
+                String[] proj = {
+                    MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.DATE_TAKEN,
+                    MediaStore.Video.Media.DATE_ADDED, MediaStore.Video.Media.SIZE, MediaStore.Video.Media.DURATION,
+                    MediaStore.Video.Media.WIDTH, MediaStore.Video.Media.HEIGHT, MediaStore.Video.Media.DATE_MODIFIED
+                };
+                String sel = null;
+                String[] args = null;
+                if (fromMs > 0) {
+                    sel = MediaStore.Video.Media.DATE_TAKEN + " >= ? OR (" + MediaStore.Video.Media.DATE_TAKEN + " IS NULL AND " + MediaStore.Video.Media.DATE_ADDED + " >= ?)";
+                    args = new String[] { String.valueOf(fromMs), String.valueOf(fromMs / 1000) };
+                }
+                JSArray out = new JSArray();
+                try (Cursor c = getContext().getContentResolver().query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, proj, sel, args, MediaStore.Video.Media.SIZE + " DESC")) {
+                    if (c != null) {
+                        while (c.moveToNext()) {
+                            JSObject v = new JSObject();
+                            v.put("id", "v:" + c.getLong(0));
+                            v.put("name", c.getString(1));
+                            v.put("date", c.isNull(2) ? c.getLong(3) * 1000L : c.getLong(2));
+                            v.put("size", c.getLong(4));
+                            v.put("duration", c.getLong(5) / 1000.0);
+                            v.put("width", c.getInt(6));
+                            v.put("height", c.getInt(7));
+                            v.put("mod", c.getLong(8));
+                            out.put(v);
+                        }
+                    }
+                }
+                JSObject r = new JSObject();
+                r.put("videos", out);
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject("Non riesco a leggere i video: " + e.getMessage(), e);
+            }
+        });
     }
 
     private File cacheDir() {
@@ -166,11 +227,11 @@ public class GalleriaPlugin extends Plugin {
         if (id == null) { call.reject("id mancante"); return; }
         pool.execute(() -> {
             try {
-                File f = new File(cacheDir(), id + "_" + maxSize + ".jpg");
+                File f = new File(cacheDir(), id.replace(":", "_") + "_" + maxSize + ".jpg");
                 if (!f.exists()) {
                     Uri uri = uriFor(id);
                     Bitmap bmp;
-                    if (maxSize <= 512) {
+                    if (maxSize <= 512 || isVideo(id)) {
                         bmp = getContext().getContentResolver().loadThumbnail(uri, new Size(maxSize, maxSize), null);
                     } else {
                         ImageDecoder.Source src = ImageDecoder.createSource(getContext().getContentResolver(), uri);
@@ -205,16 +266,25 @@ public class GalleriaPlugin extends Plugin {
     // ---------- Cestino ----------
     @PluginMethod
     public void trash(PluginCall call) {
+        trashOrRestore(call, true);
+    }
+
+    @PluginMethod
+    public void restore(PluginCall call) {
+        trashOrRestore(call, false);
+    }
+
+    private void trashOrRestore(PluginCall call, boolean toTrash) {
         try {
             List<String> ids = call.getArray("ids").toList();
             List<Uri> uris = new ArrayList<>();
             for (String id : ids) uris.add(uriFor(id));
             if (uris.isEmpty()) { JSObject r = new JSObject(); r.put("deleted", true); call.resolve(r); return; }
-            PendingIntent pi = MediaStore.createTrashRequest(getContext().getContentResolver(), uris, true);
+            PendingIntent pi = MediaStore.createTrashRequest(getContext().getContentResolver(), uris, toTrash);
             trashCall = call;
             senderLauncher.launch(new IntentSenderRequest.Builder(pi.getIntentSender()).build());
         } catch (Exception e) {
-            call.reject("Non riesco a spostare le foto nel cestino: " + e.getMessage(), e);
+            call.reject("Operazione sul cestino non riuscita: " + e.getMessage(), e);
         }
     }
 
@@ -222,6 +292,7 @@ public class GalleriaPlugin extends Plugin {
         if (trashCall == null) return;
         JSObject r = new JSObject();
         r.put("deleted", result.getResultCode() == Activity.RESULT_OK);
+        r.put("ok", result.getResultCode() == Activity.RESULT_OK);
         trashCall.resolve(r);
         trashCall = null;
     }
