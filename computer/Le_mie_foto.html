@@ -135,7 +135,7 @@ img.noprev { visibility:hidden; }
   <button id="navSim" class="on">Foto simili</button>
   <button id="navCls">Classifica per persone e animali</button>
   <button id="navSpa">Cosa occupa spazio</button>
-  <span class="muted">Tutto resta su questo computer · Chrome o Edge</span>
+  <span class="muted">Tutto resta su questo computer · Chrome o Edge, su Windows e su Mac</span>
 </nav>
 <section id="mod-sim" class="mod">
 
@@ -158,8 +158,8 @@ img.noprev { visibility:hidden; }
   <div id="s-intro" class="intro">
     <p><b>Come funziona</b> (tutto avviene su questo computer, niente viene caricato online):</p>
     <ol>
-      <li>Copia le foto dall'iPhone in una cartella del PC, così come arrivano: anche le foto HEIC vengono lette, non serve cambiare impostazioni sul telefono.</li>
-      <li>Apri questa pagina con <b>Chrome</b> o <b>Edge</b> e premi <i>Scegli cartella foto</i>.</li>
+      <li>Copia le foto dall'iPhone in una cartella del computer, così come arrivano: anche le foto HEIC vengono lette, non serve cambiare impostazioni sul telefono. Su <b>Mac</b> usa l'app <i>Acquisizione Immagine</i>, oppure in <i>Foto</i> seleziona le foto → <i>File → Esporta → Esporta originale non modificato</i>. Non scegliere la libreria di Foto: la pagina non la modifica.</li>
+      <li>Apri questa pagina con <b>Chrome</b> o <b>Edge</b> e premi <i>Scegli cartella foto</i>. Su Mac: clic destro sul file → <i>Apri con</i> → <i>Google Chrome</i> (con Safari puoi solo guardare i gruppi, non spostare le foto).</li>
       <li>Le foto vengono raggruppate per somiglianza. In ogni gruppo la foto proposta da tenere è in <span style="color:var(--keep);font-weight:600">verde</span> (la più nitida), le altre in <span style="color:var(--drop);font-weight:600">rosso</span>. Clicca su una foto per cambiarne lo stato; puoi tenerne anche più di una.</li>
       <li>Con <i>Sensibilità</i> allarghi o restringi i gruppi (più alta = gruppi più ampi).</li>
       <li><i>Sposta scartate</i> mette le foto rosse nella sottocartella <code>_da_cancellare</code>, mantenendo le sottocartelle d'origine. Il video delle Live Photo va insieme alla sua foto. Niente viene eliminato davvero: controlli e poi cancelli tu, e con <i>Annulla ultima operazione</i> rimetti tutto a posto.</li>
@@ -9713,6 +9713,17 @@ LMF.videosToMove = droppedImgs => {
 };
 LMF.liveBadge = it => it.live ? `<span class="live" title="Live Photo: c'è anche il video ${LMF.esc(it.live.vids.map(v => v.name).join(', '))}">LIVE · + video ${LMF.fmtB(it.live.vidBytes)}</span>` : '';
 
+// ---------------------------------------------------------------- Mac
+LMF.isMac = /Mac/i.test(navigator.platform || navigator.userAgent);
+LMF.noFsMsg = () => `Questo browser non permette alla pagina di spostare o copiare file nella cartella.${LMF.isMac ? ' Su Mac usa <b>Google Chrome</b> o <b>Microsoft Edge</b> (sono gratuiti): Safari non lo consente.' : ' Usa <b>Google Chrome</b> o <b>Microsoft Edge</b>.'}`;
+LMF.libraryMsg = 'Questa è la libreria dell\'app Foto del Mac: la pagina non deve modificarla, perché rischierebbe di rovinarla. Esporta prima le foto in una cartella normale (in Foto: seleziona le foto → menu File → Esporta → Esporta originale non modificato) e scegli quella cartella.';
+// true se la cartella si può usare; false se è la libreria di Foto (Mac) o di iPhoto/Aperture
+LMF.checkRoot = async root => {
+  if (/\.(photoslibrary|photolibrary|aplibrary|migratedphotolibrary)$/i.test(root.name || '')) return false;
+  let db = false, orig = false;
+  try { for await (const [n, h] of root.entries()) if (h.kind === 'directory') { if (n === 'database') db = true; if (n === 'originals' || n === 'Masters') orig = true; } } catch (e) {}
+  return !(db && orig);
+};
 LMF.fileKey = it => it.path + '|' + it.size; // percorso + dimensione: se la foto viene modificata, cambia la dimensione
 
 LMF.getDir = async (root, path, create) => {
@@ -10284,6 +10295,7 @@ $('pick').onclick = async () => {
     rootHandle = await showDirectoryPicker({ mode: 'readwrite', id: 'fotosimili' });
     canWrite = true;
   } catch (e) { if (e.name === 'AbortError') return; $('fallback').click(); return; }
+  if (!await LMF.checkRoot(rootHandle)) { rootHandle = null; canWrite = false; alert(LMF.libraryMsg); return; }
   rescan();
 };
 async function rescan() {
@@ -10305,7 +10317,7 @@ async function start(list) {
   $('intro').style.display = 'none';
   $('msg').innerHTML = '';
   tools.show(canWrite);
-  if (!canWrite) note('warn', 'Modalità sola lettura: potrai scegliere ed esportare l\'elenco delle foto da scartare, ma non spostarle automaticamente, né salvare l\'analisi (serve Chrome o Edge).');
+  if (!canWrite) note('warn', 'Modalità sola lettura: puoi vedere i gruppi ed esportare l\'elenco delle foto da scartare, ma non spostarle né salvare l\'analisi. ' + LMF.noFsMsg());
   if (!list.length) { setStatus('Nessuna foto trovata'); busy = false; return; }
   const sec = store ? store.section('sim') : { foto: {}, scelte: {} };
   const cache = sec.foto || (sec.foto = {});
@@ -10555,9 +10567,10 @@ tools.show(false);
 // ---------- Cartella ----------
 $('pick').onclick = async () => {
   if (!ready) { alert('Attendi il caricamento dei modelli.'); return; }
-  if (!window.showDirectoryPicker) { alert('Questo browser non lo supporta: usa Chrome o Edge.'); return; }
+  if (!window.showDirectoryPicker) { $('msg').innerHTML = ''; note('warn', LMF.noFsMsg()); return; }
   try { rootHandle = await showDirectoryPicker({ mode: 'readwrite', id: 'classificafoto' }); }
   catch (e) { return; }
+  if (!await LMF.checkRoot(rootHandle)) { rootHandle = null; alert(LMF.libraryMsg); return; }
   setStatus('Leggo la cartella…');
   const { images } = await LMF.scan(rootHandle, n => setStatus(`Leggo la cartella… ${n} file`));
   store = await new LMF.Store(rootHandle).load();
@@ -11030,8 +11043,9 @@ tools.show(false);
 
 $('pick').onclick = async () => {
   if (busy) return;
-  if (!window.showDirectoryPicker) { alert('Questo browser non lo supporta: usa Chrome o Edge.'); return; }
+  if (!window.showDirectoryPicker) { $('msg').innerHTML = ''; note('warn', LMF.noFsMsg()); return; }
   try { rootHandle = await showDirectoryPicker({ mode: 'readwrite', id: 'spazio' }); } catch (e) { return; }
+  if (!await LMF.checkRoot(rootHandle)) { rootHandle = null; alert(LMF.libraryMsg); return; }
   rescan();
 };
 $('analyse').onclick = () => analyseImages();
